@@ -8,32 +8,27 @@ import google.generativeai as genai
 
 app = FastAPI()
 
-# Load environment variables and configure Genai
 load_dotenv()
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
 
-# Define the schema for the incoming request
 class Query(BaseModel):
     question: str
     data_source: str
 
 def get_gemini_response(question, prompt):
-    model = genai.GenerativeModel('gemini-1.5-pro') # https://ai.google.dev/pricing?authuser=1#1_5pro
+    model = genai.GenerativeModel('gemini-1.5-pro')
     response = model.generate_content([prompt, question])
     return response.text
 
-# Update column and table names for the new dataset
 sql_cols_human = 'REQUESTID', 'DATETIMEINIT', 'SOURCE', 'DESCRIPTION', 'REQCATEGORY', 'STATUS', 'REFERREDTO', 'DATETIMECLOSED', 'City', 'State', 'Ward', 'Postcode'
 csv_columns_human = ['REQUESTID', 'DATETIMEINIT', 'SOURCE', 'DESCRIPTION', 'REQCATEGORY', 'STATUS', 'REFERREDTO', 'DATETIMECLOSED', 'City', 'State', 'Ward', 'Postcode']
 sql_cols = 'REQUESTID', 'DATETIMEINIT', 'SOURCE', 'DESCRIPTION', 'REQCATEGORY', 'STATUS', 'REFERREDTO', 'DATETIMECLOSED', 'City', 'State', 'Ward', 'Postcode'
-# csv_columns = ["REQUESTID", "DATETIMEINIT",  "SOURCE", "DESCRIPTION", "REQCATEGORY", "STATUS", "REFERREDTO", "DATETIMECLOSED", "PROBADDRESS" "City", "State", "Ward", "Postcode"]
 
 def get_csv_columns():
     df = pd.read_csv('wandsworth_callcenter_sampled.csv')
     return df.columns.tolist()
 
 csv_columns = get_csv_columns()
-print(csv_columns)
 
 sql_prompt = f"""
 You are an expert in converting English questions to SQLite code!
@@ -53,8 +48,6 @@ For example:
 Also, the SQL code should not have ''' in the beginning or at the end, and SQL word in output.
 Ensure that you only generate valid SQLite database queries, not pandas or Python code.
 """
-
-
 
 csv_prompt = f"""
 You are an expert in analyzing CSV data and converting English questions to pandas query syntax.
@@ -78,7 +71,6 @@ Please ensure:
 3. Provide only the pandas query syntax without any additional explanation or markdown formatting.
 Make sure to use only the columns that are available in the CSV file.
 Ensure that you only generate valid pandas queries. NO SQL or other types of code/syntax.
-
 """
 
 def execute_sql_query(query):
@@ -89,9 +81,7 @@ def execute_sql_query(query):
         result = cursor.fetchall()
         return result
     except sqlite3.Error as e:
-        # Capture and explain SQL errors
         sql_error_message = str(e)
-        # Send the error message back to Gemini for explanation        
         error_prompt = f"""
         You are an expert SQL debugger and an assistant of the director. An error occurred while executing the following query:
         {query}
@@ -107,55 +97,29 @@ def execute_sql_query(query):
     finally:
         conn.close()
 
-
-
-
 def execute_pandas_query(query):
     df = pd.read_csv('wandsworth_callcenter_sampled.csv')
-    df.columns = df.columns.str.upper()  # Normalize column names to uppercase
-    print(f"df is loaded. The first line is: {df.head(1)}")
-
-    # Remove code block indicators (e.g., ```python and ```)
+    df.columns = df.columns.str.upper()
     query = query.replace("```python", "").replace("```", "").strip()
-
-    # Split query into lines
-    query_lines = query.split("\n")  # Split into individual statements
+    query_lines = query.split("\n")
     try:
         result = None
-        exec_context = {'df': df, 'pd': pd}  # Execution context for exec()
+        exec_context = {'df': df, 'pd': pd}
         for line in query_lines:
-            line = line.strip()  # Remove extra spaces
-            if line:  # Skip empty lines
-                print(f"Executing line: {line}")
-                exec(line, exec_context)  # Execute each line in the context
-
-        # Retrieve the final result if the last line is a statement
-        result = eval(query_lines[-1].strip(), exec_context)  # Evaluate the last line for the result
-
-        print(f"Query Result Before Serialization: {result}")
-
-        # Handle DataFrame results
+            line = line.strip()
+            if line:
+                exec(line, exec_context)
+        result = eval(query_lines[-1].strip(), exec_context)
         if isinstance(result, pd.DataFrame):
-            # Replace NaN and infinite values with JSON-compliant values
             result = result.replace([float('inf'), -float('inf')], None).fillna(value="N/A")
             return result.to_dict(orient='records')
-
-        # Handle Series results
         elif isinstance(result, pd.Series):
             result = result.replace([float('inf'), -float('inf')], None).fillna(value="N/A")
             return result.to_dict()
-
-        # Handle scalar results
         else:
             return result
-
     except Exception as e:
-        print(f"Error: {e}")
         raise HTTPException(status_code=400, detail=f"Pandas Error: {str(e)}")
-
-
-
-
 
 @app.post("/query")
 async def process_query(query: Query):
@@ -167,9 +131,8 @@ async def process_query(query: Query):
         except HTTPException as e:
             error_detail = e.detail
             return {"query": ai_response, "error": error_detail["error"], "explanation": error_detail["explanation"]}
-    else:  # CSV Data
+    else:
         ai_response = get_gemini_response(query.question, csv_prompt)
-        print(f"\n\nai_response: {ai_response}")
         try:
             result = execute_pandas_query(ai_response)
             return {"query": ai_response, "result": result, "columns": csv_columns}
